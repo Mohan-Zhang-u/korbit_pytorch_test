@@ -1,8 +1,10 @@
+# mypy: allow-untyped-defs
 import inspect
 import textwrap
 
 import torch.jit
 from torch.jit._builtins import _find_builtin
+
 
 # this file is for generating documentation using sphinx autodoc
 # > help(torch.jit.supported_ops) will also give a nice listed of the
@@ -46,10 +48,10 @@ def _emit_schema(mod, name, schema, arg_start=0, padding=4):
         qualified_name = name
     else:
         qualified_name = f"{mod}.{name}"
-    schema_str = "{}({}) -> {}".format(
-        qualified_name,
-        _emit_args(len(qualified_name) + 1 + padding, schema.arguments[arg_start:]),
-        _emit_rets(schema.returns),
+    schema_str = (
+        f"{qualified_name}"
+        f"({_emit_args(len(qualified_name) + 1 + padding, schema.arguments[arg_start:])}) "
+        f"-> {_emit_rets(schema.returns)}"
     )
     return schema_str
 
@@ -276,7 +278,9 @@ def _get_global_builtins():
         if len(schemas) > 0:
             schematized_ops.append("")
         else:
-            table_row = f'":any:`{fn}`", "{schemaless_op_explanations[fn]}"'
+            table_row = (
+                f'":external+python:py:obj:`{fn}`", "{schemaless_op_explanations[fn]}"'
+            )
             schemaless_ops.append(table_row)
 
     schematized_ops_str = "\n".join(schematized_ops)

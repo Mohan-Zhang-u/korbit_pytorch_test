@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 r"""
 This package introduces support for the XPU backend, specifically tailored for
 Intel GPU optimization.
@@ -12,10 +13,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch._C
-from .. import device as _device
-from .._utils import _dummy_type, _LazySeedTracker
+from torch import device as _device
+from torch._utils import _dummy_type, _LazySeedTracker
+
 from ._utils import _get_device_index
 from .streams import Event, Stream
+
 
 _initialized = False
 _tls = threading.local()
@@ -132,7 +135,7 @@ def _lazy_init():
                         f"XPU call failed lazily at initialization with error: {str(e)}\n\n"
                         f"XPU call was originally invoked at:\n\n{''.join(orig_traceback)}"
                     )
-                    raise Exception(msg) from e
+                    raise Exception(msg) from e  # noqa: TRY002
         finally:
             delattr(_tls, "is_initializing")
         _initialized = True
@@ -214,6 +217,7 @@ def get_device_name(device: Optional[_device_t] = None) -> str:
     return get_device_properties(device).name
 
 
+@lru_cache(None)
 def get_device_capability(device: Optional[_device_t] = None) -> Dict[str, Any]:
     r"""Get the xpu capability of a device.
 
@@ -227,11 +231,9 @@ def get_device_capability(device: Optional[_device_t] = None) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: the xpu capability dictionary of the device
     """
-    prop = get_device_properties(device)
+    props = get_device_properties(device)
     return {
-        "max_work_group_size": prop.max_work_group_size,
-        "max_num_sub_groups": prop.max_num_sub_groups,
-        "sub_group_sizes": prop.sub_group_sizes,
+        prop: getattr(props, prop) for prop in dir(props) if not prop.startswith("__")
     }
 
 

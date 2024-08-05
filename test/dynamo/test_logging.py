@@ -3,7 +3,6 @@ import contextlib
 import functools
 import logging
 import os
-import re
 import unittest.mock
 
 import torch
@@ -11,9 +10,7 @@ import torch._dynamo.test_case
 import torch._dynamo.testing
 import torch.distributed as dist
 from torch._dynamo.testing import skipIfNotPy311
-
 from torch.nn.parallel import DistributedDataParallel as DDP
-
 from torch.testing._internal.common_utils import (
     find_free_port,
     munge_exc,
@@ -25,6 +22,7 @@ from torch.testing._internal.logging_utils import (
     make_logging_test,
     make_settings_test,
 )
+
 
 requires_cuda = unittest.skipUnless(HAS_CUDA, "requires cuda")
 requires_distributed = functools.partial(
@@ -85,7 +83,7 @@ def single_record_test(**kwargs):
 class LoggingTests(LoggingTestCase):
     test_bytecode = multi_record_test(2, bytecode=True)
     test_output_code = multi_record_test(2, output_code=True)
-    test_aot_graphs = multi_record_test(2, aot_graphs=True)
+    test_aot_graphs = multi_record_test(3, aot_graphs=True)
 
     @requires_cuda
     @make_logging_test(schedule=True)
@@ -164,7 +162,7 @@ from user code:
         import torch._inductor.lowering
 
         def throw(x):
-            raise AssertionError()
+            raise AssertionError
 
         # inject an error in the lowerings
         dict_entries = {}
@@ -189,7 +187,16 @@ WON'T CONVERT inductor_error_fn test_logging.py line N
 due to:
 Traceback (most recent call last):
   File "test_logging.py", line N, in throw
-    raise AssertionError()
+    raise AssertionError
+torch._inductor.exc.LoweringException: AssertionError:
+  target: aten.round.default
+  args[0]: TensorBox(StorageBox(
+    InputBuffer(name='primals_1', layout=FixedLayout('cpu', torch.float32, size=[1000, 1000], stride=[1000, 1]))
+  ))
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
 torch._dynamo.exc.BackendCompilerFailed: backend='inductor' raised:
 LoweringException: AssertionError:
   target: aten.round.default
@@ -205,7 +212,7 @@ LoweringException: AssertionError:
     @make_logging_test(ddp_graphs=True)
     def test_ddp_graphs(self, records):
         class ToyModel(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.layers = torch.nn.Sequential(
                     torch.nn.Linear(1024, 1024),
@@ -449,10 +456,11 @@ LoweringException: AssertionError:
 
     @make_logging_test(trace_source=True)
     def test_trace_source_funcname(self, records):
+        # NOTE: list comprehensions are inlined in 3.12, so test with tuples
         def fn1():
             def fn2():
                 if True:
-                    return [torch.ones(3, 3) for _ in range(5)]
+                    return tuple(torch.ones(3, 3) for _ in range(5))
                 return None
 
             return fn2()
@@ -463,28 +471,10 @@ LoweringException: AssertionError:
         found_funcname = False
         for record in records:
             msg = record.getMessage()
-            if "<listcomp>" in msg and "fn1.fn2" in msg:
+            if "<genexpr>" in msg and "fn1.fn2" in msg:
                 found_funcname = True
 
         self.assertTrue(found_funcname)
-
-    @make_logging_test(graph_sizes=True)
-    def test_graph_sizes_dynamic(self, records):
-        def fn(a, b):
-            return a @ b
-
-        fn_opt = torch._dynamo.optimize("eager", dynamic=False)(fn)
-        fn_opt(torch.randn(10, 20), torch.randn(20, 30))
-
-        fn_opt2 = torch._dynamo.optimize("eager", dynamic=True)(fn)
-        fn_opt2(torch.randn(5, 10), torch.randn(10, 15))
-
-        self.assertEqual(len(records), 2)
-        self.assertNotIn("concrete", records[0].getMessage())
-        lines = records[1].getMessage().split("\n")
-        for line in lines:
-            if "concrete" in line:
-                self.assertIsNotNone(re.search(r"\(concrete\): \(\d+, \d+\)", line))
 
     def test_invalid_artifact_flag(self):
         with self.assertRaises(ValueError):
@@ -632,14 +622,11 @@ print("arf")
         record_str = "\n".join(r.getMessage() for r in records)
 
         self.assertIn(
-            """\
-L['zs'][0] == 3.0                                             # for y, z in zip(ys, zs):""",
+            """L['zs'][0] == 3.0""",
             record_str,
         )
         self.assertIn(
-            """\
-    triggered by the following guard failure(s):\n\
-    - len(L['ys']) == 2                                             # for y, z in zip(ys, zs):""",
+            "len(L['ys']) == 2",
             record_str,
         )
 
@@ -700,14 +687,19 @@ exclusions = {
     "aot_graphs",
     "post_grad_graphs",
     "compiled_autograd",
+    "compiled_autograd_verbose",
     "recompiles",
     "recompiles_verbose",
     "graph_breaks",
+    "graph",
+    "graph_code",
+    "graph_sizes",
     "ddp_graphs",
     "perf_hints",
     "not_implemented",
     "trace_source",
     "trace_call",
+    "trace_bytecode",
     "custom_format_test_artifact",
     "onnx",
     "onnx_diagnostics",
@@ -715,6 +707,7 @@ exclusions = {
     "verbose_guards",
     "sym_node",
     "export",
+    "trace_shape_events",
 }
 for name in torch._logging._internal.log_registry.artifact_names:
     if name not in exclusions:

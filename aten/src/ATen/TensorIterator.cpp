@@ -22,7 +22,6 @@
 #endif
 
 #include <c10/util/irange.h>
-#include <c10/util/string_utils.h>
 #include <c10/util/SmallBuffer.h>
 
 #include <array>
@@ -172,7 +171,7 @@ TensorIteratorConfig& TensorIteratorConfig::declare_static_shape(IntArrayRef sha
   //   This will bypass all shape checking in the TensorIterator. Kernels which call this method
   //   are expected to check shapes before calling `add_owned_input` or `add_owned_output`.
   TORCH_CHECK(!resize_outputs_, "resize_outputs() must be called before declare_static_shape(...)")
-  static_shape_ = c10::make_optional(DimVector(shape));
+  static_shape_ = std::make_optional(DimVector(shape));
   return *this;
 }
 
@@ -835,7 +834,7 @@ void TensorIteratorBase::cast_outputs() {
       // and tensor, this condition should no longer ever be true
       const auto &original_tensor = op.original_tensor();
       const auto &tensor = op.tensor();
-      if (original_tensor.sizes() != tensor.sizes()){
+      if (original_tensor.sizes() != tensor.sizes()) {
         original_tensor.resize_as_(tensor).as_strided_(tensor.sizes(), tensor.strides());
       }
       original_tensor.copy_(tensor);
@@ -1196,6 +1195,9 @@ void TensorIteratorBase::mark_resize_outputs(const TensorIteratorConfig& config)
   }
   for (const auto i : c10::irange(num_outputs_)) {
     const auto& output = tensor(i);
+    if (!output.defined()) {
+      operands_[i].will_resize = true;
+    }
     if (output.defined() && !output.sizes().equals(shape_)) {
       if (config.resize_outputs_ && !operands_[i].is_read_write) {
         operands_[i].will_resize = true;
@@ -1307,7 +1309,7 @@ bool TensorIteratorBase::can_use_32bit_indexing() const {
 
 std::unique_ptr<TensorIterator> TensorIteratorBase::split(int dim) {
   TORCH_INTERNAL_ASSERT(dim >= 0 && dim < ndim() && shape()[dim] >= 2);
-  std::unique_ptr<TensorIterator> copy(new TensorIterator(*this));
+  auto copy = std::make_unique<TensorIterator>(*this);
 
   bool overlaps = is_dim_reduced(dim);
   auto copy_size = shape_[dim] / 2;
@@ -1395,7 +1397,7 @@ bool TensorIteratorBase::fast_set_up(const TensorIteratorConfig& config) {
         break;
       }
     default:
-      TORCH_INTERNAL_ASSERT(false, "Unsupported fast setup type", c10::to_string((int)setup_type));
+      TORCH_INTERNAL_ASSERT(false, "Unsupported fast setup type", std::to_string((int)setup_type));
   }
   //coalescing dimensions consists of collapsing dimensions to 1 (we are limited to contiguous no-broadcast cases here)
   if (ndim() > 1){
@@ -1527,13 +1529,13 @@ void TensorIteratorBase::build(TensorIteratorConfig& config) {
 
   // XLA and lazy tensors don't have storage, so they don't have an underlying data pointer.
   // Nothing beyond this point is important for meta functions, so it's fine to exit early here.
-  // Extend the condition to ORT tesnors as ORT tensors also don't have storage.
+  // Extend the condition to MAIA tesnors as MAIA tensors also don't have storage.
   if (privateuse1_without_storage  ||
       common_device_.type() == DeviceType::MTIA ||
       common_device_.type() == DeviceType::XLA  ||
       common_device_.type() == DeviceType::IPU  ||
       common_device_.type() == DeviceType::Lazy ||
-      common_device_.type() == DeviceType::ORT  ||
+      common_device_.type() == DeviceType::MAIA  ||
       common_device_.type() == DeviceType::HPU) return;
 
   for (auto& op : operands_) {

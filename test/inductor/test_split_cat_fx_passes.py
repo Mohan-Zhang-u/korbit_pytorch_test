@@ -1,19 +1,28 @@
 # Owner(s): ["module: inductor"]
 
-import unittest
 
 import torch
-from torch._dynamo.test_case import run_tests, TestCase
 from torch._dynamo.utils import counters, optimus_scuba_log
 from torch._inductor.fx_passes.misc_patterns import numpy_compat_normalization
+from torch._inductor.test_case import run_tests, TestCase
 from torch.testing._internal.common_utils import IS_LINUX
-from torch.testing._internal.inductor_utils import HAS_CUDA
-
-requires_cuda = unittest.skipUnless(HAS_CUDA, "requires cuda")
+from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
+from torch.testing._internal.triton_utils import requires_gpu
 
 
 def patch(f):
-    f = torch._inductor.config.patch(split_cat_fx_passes=True)(f)
+    f = torch._inductor.config.patch(
+        pre_grad_fusion_options={
+            "normalization_pass": {},
+            "remove_split_with_size_one_pass": {},
+            "merge_getitem_cat_pass": {},
+            "merge_splits_pass": {},
+            "mutate_cat_pass": {},
+            "split_cat_pass": {},
+            "unbind_stack_pass": {},
+        },
+        post_grad_fusion_options={},
+    )(f)
     return f
 
 
@@ -72,17 +81,17 @@ class TestSplitCatFxPasses(TestCase):
         ]
         for fn, expected_split_norm_count in [
             (arg_only, 1),
-            (arg_only_dim0, 0),
+            (arg_only_dim0, 1),
             (kwarg1, 1),
             (kwarg2, 1),
             (kwarg3, 1),
-            (list_replace, 1),
-            (multi_split, 1),
+            (list_replace, 0),
+            (multi_split, 17),
             (unequal_split, 1),
             (arg_only_cm, 1),
             (kwarg1_cm, 1),
             (kwarg2_cm, 1),
-            (multi_split_cm, 1),
+            (multi_split_cm, 17),
             (unequal_split_cm, 1),
             (cm_with_list, 1),
         ]:
@@ -91,13 +100,12 @@ class TestSplitCatFxPasses(TestCase):
 
             torch.testing.assert_close(actual, expected)
             self.assertEqual(
-                counters["inductor"]["split_cat_norm"],
+                counters["inductor"]["normalization_pass"],
                 expected_split_norm_count,
+                msg=f"for {fn}",
             )
             if expected_split_norm_count > 0:
-                self.assertIn(
-                    "split_cat_pattern_normalization_pass_pre_grad", optimus_scuba_log
-                )
+                self.assertIn("normalization_pass_pre_grad", optimus_scuba_log)
             counters.clear()
 
     @patch
@@ -269,13 +277,11 @@ class TestSplitCatFxPasses(TestCase):
 
             torch.testing.assert_close(actual, expected)
             self.assertEqual(
-                counters["inductor"]["consecutive_split_merged"],
+                counters["inductor"]["merge_splits_pass"],
                 expected_split_merged,
             )
             if expected_split_merged > 0:
-                self.assertIn(
-                    "split_cat_pattern_merge_splits_pass_pre_grad", optimus_scuba_log
-                )
+                self.assertIn("merge_splits_pass_pre_grad", optimus_scuba_log)
             counters.clear()
 
     @patch
@@ -580,7 +586,7 @@ class TestSplitCatFxPasses(TestCase):
             (input_shuffling_multiple_output, 1, 1, 2, 2, 3, default_args),
             (input_shuffling_direct_output, 1, 1, 2, 2, 3, default_args),
             (unequal_split_multiple_output, 1, 1, 2, 2, 3, default_args),
-            (multi_split_cat, 2, 2, 4, 4, 3, multi_args),
+            (multi_split_cat, 1, 1, 2, 2, 3, multi_args),
         ]:
             expected = fn(*args)
             actual = torch.compile(fn)(*args)
@@ -608,7 +614,10 @@ class TestSplitCatFxPasses(TestCase):
             )
             counters.clear()
 
-    @torch._inductor.config.patch(split_cat_fx_passes=False)
+    @torch._inductor.config.patch(
+        pre_grad_fusion_options={},
+        post_grad_fusion_options={},
+    )
     def test_config_flag_is_respected(self):
         def split_with_cat(x):
             fs = torch.split(x, [4, 4, 24], dim=-1)
@@ -630,11 +639,11 @@ class TestSplitCatFxPasses(TestCase):
 
         torch.testing.assert_close(actual, expected)
         self.assertEqual(
-            counters["inductor"]["consecutive_split_merged"],
+            counters["inductor"]["merge_splits_pass"],
             0,
         )
         self.assertEqual(
-            counters["inductor"]["split_cat_norm"],
+            counters["inductor"]["normalization_pass"],
             0,
         )
 
@@ -742,7 +751,7 @@ class TestSplitCatFxPasses(TestCase):
 
             torch.testing.assert_close(actual, expected)
             self.assertEqual(
-                counters["inductor"]["split_squeeze_replaced"],
+                counters["inductor"]["split_cat_pass"],
                 split_squeeze_replaced,
             )
             counters.clear()
@@ -865,16 +874,14 @@ class TestSplitCatFxPasses(TestCase):
             (split_squeeze_stack_callmethod, 0, 1, 0, 1, 31, 2),
             (other_users, 0, 0, 0, 0, 0, 2),
             (other_users_2, 0, 0, 0, 0, 0, 2),
-            (unbind_cat_addn_args, 0, 1, 1, 1, 31, 2),
+            (unbind_cat_addn_args, 0, 1, 1, 1, 31, 1),
             (unbind_stack_addn_args, 0, 1, 1, 1, 31, 2),
-            (unbind_cat_addn_args_dim2, 0, 1, 1, 1, 31, 2),
-            (unbind_cat_dim_mismatch, 0, 1, 1, 1, 31, 2),
+            (unbind_cat_addn_args_dim2, 0, 1, 1, 1, 31, 1),
+            (unbind_cat_dim_mismatch, 0, 1, 1, 1, 31, 1),
             (unbind_stack_dim_mismatch, 0, 1, 1, 1, 31, 2),
-            (unbind_cat_multi_users, 0, 1, 2, 2, 31, 3),
-            (unbind_cat_multi_users_diff_dims, 0, 1, 2, 2, 31, 3),
+            (unbind_cat_multi_users, 0, 1, 2, 2, 31, 2),
+            (unbind_cat_multi_users_diff_dims, 0, 1, 2, 2, 31, 2),
         ]:
-            print()
-            print(fn)
             expected = fn(*args)
             actual = torch.compile(fn)(*args)
 
@@ -882,26 +889,32 @@ class TestSplitCatFxPasses(TestCase):
             self.assertEqual(
                 counters["inductor"]["scmerge_split_added"],
                 expected_unbind_added,
+                msg=f"for {fn}",
             )
             self.assertEqual(
                 counters["inductor"]["scmerge_split_removed"],
                 expected_unbind_removed,
+                msg=f"for {fn}",
             )
             self.assertEqual(
                 counters["inductor"]["scmerge_cat_added"],
                 expected_cat_added,
+                msg=f"for {fn}",
             )
             self.assertEqual(
                 counters["inductor"]["scmerge_cat_removed"],
                 expected_cat_removed,
+                msg=f"for {fn}",
             )
             self.assertEqual(
                 counters["inductor"]["scmerge_split_sections_removed"],
                 expected_sections_removed,
+                msg=f"for {fn}",
             )
             self.assertEqual(
-                counters["inductor"]["split_cat_norm"],
+                counters["inductor"]["normalization_pass"],
                 expected_unbind_normalized,
+                msg=f"for {fn}",
             )
             counters.clear()
 
@@ -1113,33 +1126,18 @@ class TestSplitCatFxPasses(TestCase):
             )
             return torch.cat((output, cat), dim=0)
 
-        args = [
-            torch.randn(500, 500),
-        ]
-        for fn, expected_getitem_cat_merged, expected_cat_removed in [
-            (split_cat_split, 2, 0),
-            (split_cat_split_kwarg, 2, 0),
-            (remove_cat_node_with_all_getitmes, 0, 2),
-            (mutate_cat_node_with_some_getitmes, 0, 1),
-        ]:
-            expected = fn(*args)
-            actual = torch.compile(fn)(*args)
-
-            torch.testing.assert_close(actual, expected)
-            self.assertEqual(
-                counters["inductor"]["getitem_cat_merged"],
-                expected_getitem_cat_merged,
-            )
-            self.assertEqual(
-                counters["inductor"]["cat_mutated"],
-                expected_cat_removed,
-            )
-            counters.clear()
-
-    @patch
-    def test_stack_tahn_unbind_merge(self):
-        def stack_tahn_unbind(x):
-            l1_out = torch.split(x, [20, 20, 20, 10, 10, 20, 20], 1)
+        @torch._inductor.config.patch(
+            pre_grad_fusion_options={
+                "optimize_cat_inputs_pass": {},
+            },
+            post_grad_fusion_options={},
+        )
+        def optimize_cat_inputs(x):
+            x_c = x.clone()
+            x_c_2 = x.clone()
+            l1_out = torch.split(x, [50, 50, 50, 50, 50, 50, 50, 50, 50, 50], dim=0)
+            l2_out = torch.split(x_c, [50, 50, 50, 50, 50, 50, 50, 50, 50, 50], dim=0)
+            l3_out = torch.split(x_c_2, [100, 100, 100, 100, 100], dim=0)
             item0 = l1_out[0]
             item1 = l1_out[1]
             item2 = l1_out[2]
@@ -1147,29 +1145,126 @@ class TestSplitCatFxPasses(TestCase):
             item4 = l1_out[4]
             item5 = l1_out[5]
             item6 = l1_out[6]
-            stack = torch.stack(tensors=(item0, item1, item2), dim=0)
-            cat_1 = torch.cat((item3, item4), 1)
-            cat_2 = torch.cat((item5, item6), 1)
-            tanh = torch.tanh(stack)
-            unbind = torch.unbind(tanh, 0)
-            return torch.cat((unbind[0], unbind[1], torch.cat((cat_1, cat_2), 1)), 1)
+            item7 = l1_out[7]
+            item8 = l1_out[8]
+            item9 = l1_out[9]
+            item0_c = l2_out[0]
+            item1_c = l2_out[1]
+            item2_c = l2_out[2]
+            item3_c = l2_out[3]
+            item4_c = l2_out[4]
+            item5_c = l2_out[5]
+            item6_c = l2_out[6]
+            item7_c = l2_out[7]
+            item8_c = l2_out[8]
+            item9_c = l2_out[9]
+            item0_c_2 = l3_out[0]
+            item1_c_2 = l3_out[1]
+            item2_c_2 = l3_out[2]
+            item3_c_2 = l3_out[3]
+            item4_c_2 = l3_out[4]
+            other = item0.clone()
+            return torch.cat(
+                [
+                    other,
+                    item0,
+                    item1,
+                    item2,
+                    item3,
+                    item4,
+                    item5,
+                    item6,
+                    item7,
+                    item8,
+                    item9,
+                    item4_c,
+                    item5_c,
+                    item6_c,
+                    item7_c,
+                    item8_c,
+                    item9_c,
+                    item0_c,
+                    item1_c,
+                    item2_c,
+                    item3_c,
+                    item0_c_2,
+                    item1_c_2,
+                    item2_c_2,
+                    item3_c_2,
+                    item4_c_2,
+                ],
+                dim=0,
+            )
+
+        @torch._inductor.config.patch(
+            pre_grad_fusion_options={
+                "unbind_cat_to_view_pass": {},
+            },
+            post_grad_fusion_options={},
+        )
+        def unbind_cat_to_view(x):
+            x_c = x.view(10, 50, 500)
+            l1_out = torch.unbind(x_c, dim=0)
+            item0 = l1_out[0]
+            item1 = l1_out[1]
+            item2 = l1_out[2]
+            item3 = l1_out[3]
+            item4 = l1_out[4]
+            item5 = l1_out[5]
+            item6 = l1_out[6]
+            item7 = l1_out[7]
+            item8 = l1_out[8]
+            item9 = l1_out[9]
+            cat = torch.cat(
+                [
+                    item0,
+                    item1,
+                    item2,
+                    item3,
+                    item4,
+                    item5,
+                    item6,
+                ],
+                dim=1,
+            )
+            return torch.cat((cat, item7, item8, item9), dim=1)
 
         args = [
-            torch.randn(50, 120),
+            torch.randn(500, 500),
         ]
-        for fn, expected_stack_tahn_unbind_merged in [
-            (stack_tahn_unbind, 1),
+        for (
+            fn,
+            expected_getitem_cat_merged,
+            expected_cat_removed,
+            expected_cat_optimized,
+            exptected_unbind_to_cat_view,
+        ) in [
+            (split_cat_split, 2, 0, 0, 0),
+            (split_cat_split_kwarg, 2, 0, 0, 0),
+            (remove_cat_node_with_all_getitmes, 0, 2, 0, 0),
+            (mutate_cat_node_with_some_getitmes, 0, 1, 0, 0),
+            (optimize_cat_inputs, 0, 0, 1, 0),
+            (unbind_cat_to_view, 0, 0, 0, 1),
         ]:
             expected = fn(*args)
             actual = torch.compile(fn)(*args)
 
             torch.testing.assert_close(actual, expected)
             self.assertEqual(
-                counters["inductor"]["stack_tahn_unbind_merged"],
-                expected_stack_tahn_unbind_merged,
+                counters["inductor"]["merge_getitem_cat_pass"],
+                expected_getitem_cat_merged,
             )
-            self.assertIn(
-                "split_cat_pattern_merge_getitem_cat_pass_pre_grad", optimus_scuba_log
+            self.assertEqual(
+                counters["inductor"]["mutate_cat_pass"],
+                expected_cat_removed,
+            )
+            self.assertEqual(
+                counters["inductor"]["optimize_cat_inputs_pass"],
+                expected_cat_optimized,
+            )
+            self.assertEqual(
+                counters["inductor"]["unbind_cat_to_view_pass"],
+                exptected_unbind_to_cat_view,
             )
             counters.clear()
 
@@ -1191,12 +1286,12 @@ class TestSplitCatFxPasses(TestCase):
                 self.assertTrue(k not in {"x", "x1", "x2", "a", "axis", "keepdims"})
 
     @patch
-    @requires_cuda
+    @requires_gpu
     def test_stack_normalization_axis_kwarg(self):
         def fn(x, y):
             return torch.stack([x, y], axis=1)
 
-        x, y = (torch.rand((4, 4), device="cuda") for _ in range(2))
+        x, y = (torch.rand((4, 4), device=GPU_TYPE) for _ in range(2))
         expected = fn(x, y)
         actual = torch.compile(fn)(x, y)
 
@@ -1204,5 +1299,5 @@ class TestSplitCatFxPasses(TestCase):
 
 
 if __name__ == "__main__":
-    if IS_LINUX and HAS_CUDA:
+    if IS_LINUX and HAS_GPU:
         run_tests()
