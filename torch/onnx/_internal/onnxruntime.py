@@ -1,8 +1,9 @@
+# mypy: allow-untyped-decorators
+# mypy: allow-untyped-defs
 import dataclasses
 import importlib
 import logging
 import os
-
 from typing import (
     Any,
     Callable,
@@ -14,9 +15,9 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    TYPE_CHECKING,
     Union,
 )
-
 from typing_extensions import TypeAlias
 
 import torch
@@ -31,9 +32,12 @@ from torch.fx.passes.operator_support import OperatorSupport
 from torch.fx.passes.tools_common import CALLABLE_NODE_OPS
 from torch.utils import _pytree
 
+
+if TYPE_CHECKING:
+    import onnx
+
 try:
     # Use try-except to initialize package-dependent global variables.
-    import onnx
     import onnxruntime  # type: ignore[import]
     from onnxruntime.capi import _pybind_state as ORTC  # type: ignore[import]
 
@@ -43,8 +47,8 @@ try:
 
     import torch.onnx
     import torch.onnx._internal
+    import torch.onnx._internal._exporter_legacy
     import torch.onnx._internal.diagnostics
-    import torch.onnx._internal.exporter
     import torch.onnx._internal.fx.decomposition_table
     import torch.onnx._internal.fx.passes
     from torch.onnx._internal.fx import fx_onnx_interpreter
@@ -145,7 +149,7 @@ def _get_ort_device_type(device_type: str):
     if device_type == "cpu":
         return ORTC.OrtDevice.cpu()
     # ort pytorch device is mapped to NPU OrtDevice type
-    if device_type == "ort":
+    if device_type == "maia":
         return ORTC.OrtDevice.npu()
     raise ValueError("Unsupported device type: " + device_type)
 
@@ -182,7 +186,7 @@ class OrtOperatorSupport(OperatorSupport):
             return False
         # This is the and the only place to decide if aten op is supported.
         if node.op == "call_function" and node.target in self._onnx_support_dict:
-            logger.warning(
+            logger.info(
                 "support_dict supports node.target: %s (type: %s)",
                 node.target,
                 type(node.target),
@@ -192,7 +196,7 @@ class OrtOperatorSupport(OperatorSupport):
         # can convert it to ONNX equivalence. Let's use base mechanism to do this.
         # See extra_support_dict  for supported ops.
         if super().is_node_supported(submodules, node):
-            logger.warning(
+            logger.info(
                 "extra_support_dict supports node.target: %s (type: %s)",
                 node.target,
                 type(node.target),
@@ -552,9 +556,9 @@ class OrtExecutionInfoPerSession:
         self.output_value_infos: Tuple[onnx.ValueInfoProto, ...] = output_value_infos  # type: ignore[name-defined]
         # For the ONNX model stored in self.session, self.input_devices[i] is the
         # i-th positional input's device.
-        self.input_devices: Tuple["ORTC.OrtDevice", ...] = input_devices
+        self.input_devices: Tuple[ORTC.OrtDevice, ...] = input_devices
         # Similar to self.input_devices, but for outputs.
-        self.output_devices: Tuple["ORTC.OrtDevice", ...] = output_devices
+        self.output_devices: Tuple[ORTC.OrtDevice, ...] = output_devices
         # This is the outputs of executing the original torch.fx.GraphModule with example inputs
         # (i.e., args passed into OrtBackend._ort_acclerated_call).
         self.example_outputs: Union[
@@ -598,7 +602,7 @@ class OrtExecutionInfoPerSession:
 
 @dataclasses.dataclass
 class OrtExecutionInfoForAllGraphModules:
-    def __init__(self):
+    def __init__(self) -> None:
         # All sessions (and their related information) created by exporting the same GraphModule
         # with different inputs.
         self.execution_info_per_graph_module: Dict[
@@ -736,7 +740,7 @@ class OrtBackend:
         # - self._resolved_onnx_exporter_options.onnx_registry records what
         #   aten/prim ops are supported by exporter and their exporters (type: callable).
         self._resolved_onnx_exporter_options = (
-            torch.onnx._internal.exporter.ResolvedExportOptions(
+            torch.onnx._internal._exporter_legacy.ResolvedExportOptions(
                 torch.onnx.ExportOptions()
                 if self._options.export_options is None
                 else self._options.export_options
@@ -804,7 +808,7 @@ class OrtBackend:
     def _select_eps(
         self, graph_module: torch.fx.GraphModule, *args
     ) -> Sequence[Tuple[str, Mapping[str, Any]]]:
-        inferred_eps: Tuple[str, ...] = tuple()
+        inferred_eps: Tuple[str, ...] = ()
         if self._options.infer_execution_providers:
             if eps_from_args := _infer_ep_from_device(*args):
                 # If user feeds CUDA tensor as input argument,
@@ -921,6 +925,20 @@ class OrtBackend:
             onnx_model = exported.to_model_proto(
                 opset_version=self._resolved_onnx_exporter_options.onnx_registry.opset_version,
             )
+
+            try:
+                from onnxscript import optimizer  # type: ignore[import]
+                from onnxscript.rewriter import (  # type: ignore[import]
+                    onnxruntime as ort_rewriter,
+                )
+
+                onnx_model = optimizer.optimize(onnx_model)
+                onnx_model = ort_rewriter.rewrite(onnx_model)
+            except ImportError:
+                logger.warning(
+                    "ONNXScript optimizer is not available. Skipping optimization. "
+                    "Please `pip install onnxscript -U` to enable post-export optimization."
+                )
 
             # Modify ONNX model using pre-registered graph transforms.
             # They are in-place modifications for avoiding unnecessary
@@ -1094,7 +1112,6 @@ class OrtBackend:
         the ``compile`` method is invoked directly."""
         if self._options.use_aot_autograd:
             from functorch.compile import min_cut_rematerialization_partition
-
             from torch._dynamo.backends.common import aot_autograd
 
             return aot_autograd(

@@ -33,12 +33,9 @@ struct UsageStream {
   UsageStream() = default;
   UsageStream(cudaStream_t s, c10::DeviceIndex d) : stream(s), device(d) {}
   UsageStream(const UsageStream& us) = default;
-  UsageStream(const UsageStream&& us) : stream(us.stream), device(us.device) {}
-  UsageStream& operator=(UsageStream other) {
-    stream = other.stream;
-    device = other.device;
-    return *this;
-  }
+  UsageStream(UsageStream&& us) noexcept = default;
+  UsageStream& operator=(const UsageStream& other) = default;
+  UsageStream& operator=(UsageStream&& other) noexcept = default;
 };
 
 bool operator==(const UsageStream& lhs, const UsageStream& rhs) {
@@ -471,7 +468,7 @@ struct CudaMallocAsyncAllocator : public CUDAAllocator {
     size_t device_total = 0;
     C10_CUDA_CHECK(cudaMemGetInfo(&device_free, &device_total));
     pytorch_memory_limits[device] =
-        static_cast<uint64_t>(fraction * device_total);
+        static_cast<uint64_t>(fraction * static_cast<double>(device_total));
 
     // Alternative: Instead of a manual hard limit, we could use
     // cudaMemPoolSetAttribute(mempool, cudaMemPoolAttrReleaseThreshold,
@@ -608,6 +605,13 @@ struct CudaMallocAsyncAllocator : public CUDAAllocator {
     }
   }
 
+  ShareableHandle shareIpcHandle(void* handle) override {
+    TORCH_CHECK(
+        false,
+        "cudaMallocAsync does not yet support shareIpcHandle. "
+        "If you need it, please file an issue describing your use case.");
+  }
+
   std::shared_ptr<void> getIpcDevPtr(std::string handle) override {
     TORCH_CHECK(
         false,
@@ -709,17 +713,17 @@ struct CudaMallocAsyncAllocator : public CUDAAllocator {
     // We simply ask the driver's opinion about active memory.
     // We don't bother distinguishing between allocated_bytes and active_bytes.
     stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
-        used_mem_current;
+        static_cast<int64_t>(used_mem_current);
     stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
-        used_mem_peak;
+        static_cast<int64_t>(used_mem_peak);
     stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
-        used_mem_current;
+        static_cast<int64_t>(used_mem_current);
     stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
-        used_mem_peak;
+        static_cast<int64_t>(used_mem_peak);
     stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
-        reserved_mem_current;
+        static_cast<int64_t>(reserved_mem_current);
     stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
-        reserved_mem_peak;
+        static_cast<int64_t>(reserved_mem_peak);
 
     return stats;
   }
@@ -858,6 +862,7 @@ struct CudaMallocAsyncAllocator : public CUDAAllocator {
     C10_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&mempool, dev_to_access));
     cudaMemAccessDesc desc = {};
     desc.location.type = cudaMemLocationTypeDevice;
+    // NOLINTNEXTLINE(bugprone-signed-char-misuse)
     desc.location.id = dev;
     desc.flags = cudaMemAccessFlagsProtReadWrite;
     C10_CUDA_CHECK(cudaMemPoolSetAccess(mempool, &desc, 1 /* numDescs */));

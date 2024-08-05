@@ -1,16 +1,19 @@
-# mypy: ignore-errors
-
 from .base import VariableTracker
 from .builtin import BuiltinVariable
 from .constant import ConstantVariable, EnumVariable
 from .ctx_manager import (
+    CatchWarningsCtxManagerVariable,
     ContextWrappingVariable,
     DeterministicAlgorithmsVariable,
     DisabledSavedTensorsHooksVariable,
+    DualLevelContextManager,
+    FSDPParamGroupUseTrainingStateVariable,
     GradIncrementNestingCtxManagerVariable,
     GradInplaceRequiresGradCtxManagerVariable,
     GradModeVariable,
     InferenceModeVariable,
+    JvpIncrementNestingCtxManagerVariable,
+    SetFwdGradEnabledContextManager,
     StreamContextVariable,
     StreamVariable,
     VmapIncrementNestingCtxManagerVariable,
@@ -19,11 +22,10 @@ from .ctx_manager import (
 from .dicts import (
     ConstDictVariable,
     CustomizedDictVariable,
-    DataClassVariable,
     DefaultDictVariable,
     SetVariable,
 )
-from .distributed import BackwardHookVariable
+from .distributed import BackwardHookVariable, DistributedVariable, PlacementVariable
 from .functions import (
     FunctoolsPartialVariable,
     NestedUserFunctionVariable,
@@ -32,6 +34,7 @@ from .functions import (
     UserMethodVariable,
 )
 from .higher_order_ops import (
+    FunctionalCallVariable,
     FunctorchHigherOrderVariable,
     TorchHigherOrderOperatorVariable,
 )
@@ -59,6 +62,7 @@ from .misc import (
     AutogradFunctionVariable,
     ClosureVariable,
     DeletedVariable,
+    ExceptionVariable,
     GetAttrVariable,
     InspectSignatureVariable,
     LambdaVariable,
@@ -67,12 +71,19 @@ from .misc import (
     NewGlobalVariable,
     NumpyVariable,
     PythonModuleVariable,
+    RegexPatternVariable,
     StringFormatVariable,
     SuperVariable,
+    TorchVersionVariable,
     TypingVariable,
     UnknownVariable,
 )
-from .nn_module import NNModuleVariable, UnspecializedNNModuleVariable
+from .nn_module import (
+    NNModuleVariable,
+    UnspecializedBuiltinNNModuleVariable,
+    UnspecializedNNModuleVariable,
+)
+from .optimizer import OptimizerVariable
 from .sdpa import SDPAParamsVariable
 from .tensor import (
     FakeItemVariable,
@@ -84,10 +95,13 @@ from .tensor import (
 )
 from .torch import TorchCtxManagerClassVariable, TorchInGraphFunctionVariable
 from .user_defined import (
+    MutableMappingVariable,
     RemovableHandleVariable,
     UserDefinedClassVariable,
     UserDefinedObjectVariable,
+    WeakRefVariable,
 )
+
 
 __all__ = [
     "AutogradFunctionContextVariable",
@@ -95,6 +109,7 @@ __all__ = [
     "BackwardHookVariable",
     "BaseListVariable",
     "BuiltinVariable",
+    "CatchWarningsCtxManagerVariable",
     "ClosureVariable",
     "ConstantVariable",
     "ConstDictVariable",
@@ -102,7 +117,6 @@ __all__ = [
     "CountIteratorVariable",
     "CustomizedDictVariable",
     "CycleIteratorVariable",
-    "DataClassVariable",
     "DefaultDictVariable",
     "DeletedVariable",
     "DeterministicAlgorithmsVariable",
@@ -124,8 +138,11 @@ __all__ = [
     "NNModuleVariable",
     "NumpyNdarrayVariable",
     "NumpyVariable",
+    "OptimizerVariable",
+    "PlacementVariable",
     "PythonModuleVariable",
     "RangeVariable",
+    "RegexPatternVariable",
     "RemovableHandleVariable",
     "RepeatIteratorVariable",
     "RestrictedListSubclassVariable",
@@ -137,6 +154,7 @@ __all__ = [
     "TensorVariable",
     "TorchCtxManagerClassVariable",
     "TorchInGraphFunctionVariable",
+    "TorchVersionVariable",
     "TupleVariable",
     "UnknownVariable",
     "UnspecializedNNModuleVariable",

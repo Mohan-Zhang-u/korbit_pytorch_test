@@ -5,13 +5,15 @@ import functools
 from importlib import import_module
 from typing import Any, List, Optional
 
-from functorch.compile import min_cut_rematerialization_partition
-
 import torch
+from functorch.compile import min_cut_rematerialization_partition
 from torch import _guards
+from torch._functorch import config as functorch_config
 from torch._functorch.compilers import ts_compile
+
 from .common import aot_autograd
 from .registry import register_debug_backend as register_backend
+
 
 """
 This file contains TorchDynamo backends intended for debugging uses.
@@ -20,7 +22,22 @@ This file contains TorchDynamo backends intended for debugging uses.
 
 @register_backend
 def eager(gm, fake_tensor_inputs):
-    return gm
+    return gm.forward
+
+
+@register_backend
+def eager_noexcept(gm, fake_tensor_inputs):
+    # This backend is intended to check that dynamo-generated GraphModules
+    # do not cause errors.
+    def inner(*args):
+        try:
+            return gm(*args)
+        except Exception as e:
+            raise torch._dynamo.exc.TorchDynamoException(
+                "Unexpected exception when running generated GraphModule"
+            ) from e
+
+    return inner
 
 
 @register_backend
@@ -67,34 +84,44 @@ def boxed_nop(fx_g, example_inputs):
 # Useful for debugging purpose
 # aot_eager uses AOT Autograd backend with nop compiler. It is helpful in debugging.
 aot_eager = aot_autograd(
-    fw_compiler=boxed_nop, partition_fn=min_cut_rematerialization_partition
+    fw_compiler=boxed_nop,
+    partition_fn=min_cut_rematerialization_partition,
+    keep_inference_input_mutations=True,
 )
 register_backend(name="aot_eager", compiler_fn=aot_eager)
 
-aot_eager_default_partitioner = aot_autograd(fw_compiler=boxed_nop)
+aot_eager_default_partitioner = aot_autograd(
+    fw_compiler=boxed_nop, keep_inference_input_mutations=True
+)
 register_backend(
     name="aot_eager_default_partitioner", compiler_fn=aot_eager_default_partitioner
 )
+
 
 # Uses TorchInductor AOT Autograd decomps and partitioner to isolate aot vs
 # inductor problems.
 # aot_eager_decomp_partition just replaces the inductor compiler with nop to help
 # isolate inductor vs aot_eager errors
-aot_eager_decomp_partition = aot_autograd(
-    # these are taken from memory_efficient_fusion()
-    fw_compiler=boxed_nop,
-    bw_compiler=boxed_nop,
-    # NB: lambda here is to delay import of inductor
-    decompositions=lambda: import_module(
-        "torch._inductor.compile_fx"
-    ).select_decomp_table(),
-    partition_fn=functools.partial(
-        min_cut_rematerialization_partition, compiler="inductor"
-    ),
-)
+def aot_eager_decomp_partition(gm, fake_tensor_inputs):
+    with functorch_config.patch(unlift_effect_tokens=True):
+        return aot_autograd(
+            # these are taken from memory_efficient_fusion()
+            fw_compiler=boxed_nop,
+            bw_compiler=boxed_nop,
+            # NB: lambda here is to delay import of inductor
+            decompositions=lambda: import_module(
+                "torch._inductor.compile_fx"
+            ).select_decomp_table(),
+            partition_fn=functools.partial(
+                min_cut_rematerialization_partition, compiler="inductor"
+            ),
+        )(gm, fake_tensor_inputs)
+
+
 register_backend(
     name="aot_eager_decomp_partition", compiler_fn=aot_eager_decomp_partition
 )
+
 
 # AOT Autograd with torchscript backend. Default partitioner.
 # aot_ts uses torchscript backend. We can use this with both nnc and nvfuser
@@ -118,7 +145,7 @@ class TestingOnlyCompileError(Exception):
 def relu_compile_error_TESTING_ONLY(gm: torch.fx.GraphModule, example_inputs):
     for node in gm.graph.nodes:
         if node.target == torch.relu:
-            raise ReluCompileError()
+            raise ReluCompileError
     return gm
 
 
@@ -154,7 +181,7 @@ def non_leaf_compile_error_TESTING_ONLY(gm: torch.fx.GraphModule, example_inputs
         return gm
     for t in example_inputs:
         if not t.is_leaf:
-            raise TestingOnlyCompileError()
+            raise TestingOnlyCompileError
     return gm
 
 
@@ -176,7 +203,7 @@ class ExplainOutput:
     out_guards: Optional[List[_guards.Guard]] = None
     compile_times: Optional[str] = None
 
-    def __str__(self):
+    def __str__(self) -> str:
         output = f"Graph Count: {self.graph_count}\n"
         output += f"Graph Break Count: {self.graph_break_count}\n"
         output += f"Op Count: {self.op_count}\n"
@@ -262,7 +289,7 @@ class ExplainWithBackend:
         print(eb.output())
     """
 
-    def __init__(self, backend):
+    def __init__(self, backend) -> None:
         from .registry import lookup_backend
 
         self.backend = lookup_backend(backend)
